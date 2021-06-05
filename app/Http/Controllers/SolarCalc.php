@@ -16,7 +16,7 @@ class SolarCalc extends Controller
      * @var $RMPTiers array
      * tiers represent the tiered rates.
      * s1-kwh is the number of kWh that the first Summer tier encompasses. (Summer is June - Sept inclusive)
-     * s2-kwh is the number of kWh that the second Summer tier encompasses, or "inf" for all values greater than previous.
+     * s2-kwh is the number of kWh that the second Summer tier encompasses, or a ridiculously high number to represent infinite for all values greater than previous.
      * s1-cost is the cost in dollars per kWh purchased in the first tier in summer months
      * s2-cost is the cost in dollars per kWh purchased in the second tier in summer months
      * Winter months follow a similar format, but with a 'w' instead of an 's'. (Winter is Oct - May inclusive)
@@ -24,70 +24,83 @@ class SolarCalc extends Controller
      */
     private $RMPTiers = [
         's1-kwh' => 400,
-        's2-kwh' => 'inf',
+        's2-kwh' => 10000000000000000,
         's1-cost' => 0.092802,
         's2-cost' => 0.119733,
         's-solar-buyback' => 0.05817,
         'w1-kwh' => 400,
-        'w2-kwh' => 'inf',
+        'w2-kwh' => 10000000000000000,
         'w1-cost' => 0.082126,
         'w2-cost' => 0.105959,
         'w-solar-buyback' => 0.05487,
     ];
-    private $configs = [];
+    private $fixedSolarCost =0;
+    private $tiers = [];
+    private $seasonBlock;
+    private $runningTotal;
 
-    private function setConfigs($tiers = '')
+    private function setConfigs($configs = '')
     {
-        if (!$tiers) {
-            $this->configs = [
-                'tiers' => $this->RMPTiers,
-                'fixed-solar-cost' => 115,
-            ];
+        if (!$configs) {
+            $this->seasonBlock = 's';
+            $this->tiers = $this->RMPTiers;
+            $this->fixedSolarCost = 115;
+        }
+        else{
+            $this->tiers = $configs['tiers']?? $this->RMPTiers;
+            $this->seasonBlock = $configs['seasonBlock'];
+            $this->fixedSolarCost = $configs['fixed-solar-cost'] ?? 115;
         }
     }
 
     public function calcSavings(Request $request)
     {
-        $this->setConfigs();
+        $this->setConfigs($request->input());
         $kWhPurchased = $request->input('kWhPurchased');
         $kWhPushed = $request->input('kWhPushed');
         $kWhProduced = $request->input('kWhProduced');
-        $seasonBlock = $request->input('seasonBlock');
-        $t1kwh = 0;
-        $t2kwh = 0;
-        $t1cost = 0;
-        $t2cost = 0;
-        $savings = 0;
-        $buyBackRate = 0;
-        switch ($seasonBlock) {
-            case('w'):
-            {
-                $t1kwh = $this->configs['tiers']['w1-kwh'];
-                $t2kwh = $this->configs['tiers']['w2-kwh'];
-                $t1cost = $this->configs['tiers']['w1-cost'];
-                $t2cost = $this->configs['tiers']['w2-cost'];
-                $buyBackRate = $this->configs['tiers']['w-solar-buyback'];
-            }
-            case('s'):
-            {
-                $t1kwh = $this->configs['tiers']['s1-kwh'];
-                $t2kwh = $this->configs['tiers']['s2-kwh'];
-                $t1cost = $this->configs['tiers']['s1-cost'];
-                $t2cost = $this->configs['tiers']['s2-cost'];
-                $buyBackRate = $this->configs['tiers']['s-solar-buyback'];
-            }
-        }
-        $highTier = max(($kWhPurchased - $t1kwh), 0);
-        $lowTier = $kWhPurchased - $highTier;
-        $kwhUsedLocally = $kWhProduced - $kWhPushed;
+        $highestTier = $this->findStartingTier($kWhPurchased);
 
-        //return $t2cost;
-        if ($highTier > 0) {
-            $savings = ($kwhUsedLocally * $t2cost + $kWhPushed * $buyBackRate) - $this->configs['fixed-solar-cost'];
-        } else {
-            $savings = 0;
-        }
+
+
+        $kwhUsedLocally = $kWhProduced - $kWhPushed;
+        $this->runningTotal = $kwhUsedLocally;
+        $savingsInLocalUse = $this->getSavingsFromTier($highestTier,$kwhUsedLocally,$kWhPurchased - $this->tiers[$this->seasonBlock . $highestTier . '-kwh']);
+        $savings = $savingsInLocalUse + $kWhPushed * $this->tiers[$this->seasonBlock.'-solar-buyback'] - $this->fixedSolarCost;
+
 
         return ['savings' => $savings];
     }
+
+    private function findStartingTier($kwhUsed){
+        $highestTierUsed = 1;
+
+        while($kwhUsed > $this->tiers[$this->seasonBlock . $highestTierUsed . '-kwh']){
+            $highestTierUsed++;
+        }
+        return $highestTierUsed;
+    }
+
+    private function getSavingsFromTier($tierNumber, $kwhCredits, $creditsPurchasedInTier=0){
+        $tierLimit = $this->tiers[$this->seasonBlock . $tierNumber . '-kwh'];
+        $toNextTier = $tierLimit - $creditsPurchasedInTier;
+        //if we have not got enough credits to get to the next tier:
+
+
+        if($toNextTier - $kwhCredits >= 0){
+            return $kwhCredits * $this->tiers[$this->seasonBlock . $tierNumber . '-cost'];
+        }
+        else{//We have more credits than the limit of this tier
+             /**
+              *How many credits were used in this tier?
+              */
+            $usedInThisTier = $tierLimit - $creditsPurchasedInTier;
+            $kwhCredits = $kwhCredits - $usedInThisTier;
+            error_log($tierNumber. " " .$usedInThisTier * $this->tiers[$this->seasonBlock . $tierNumber . '-cost'],3,'/Users/blakethompson/projects/mylogfile');
+
+            return ($usedInThisTier * $this->tiers[$this->seasonBlock . $tierNumber . '-cost']) + $this->getSavingsFromTier($tierNumber+1,$kwhCredits);
+        }
+
+}
+
 }

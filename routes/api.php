@@ -18,4 +18,4 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('auth:api')->get('/user', function (Request $request) {
     return $request->user();
 });
-Route::post('/solarSavings', 'App\Http\Controllers\SolarCalc@calcSavings');
+Route::post('/solarSavings', 'App\Http\Controllers\SolarCalc@calcSavings')->name('solarSavings');
